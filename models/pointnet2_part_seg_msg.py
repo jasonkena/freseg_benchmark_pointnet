@@ -3,6 +3,8 @@ import torch
 import torch.nn.functional as F
 from models.pointnet2_utils import PointNetSetAbstractionMsg,PointNetSetAbstraction,PointNetFeaturePropagation
 
+import lovely_tensors as lt
+lt.monkey_patch()
 
 class get_model(nn.Module):
     def __init__(self, num_classes, normal_channel=False):

@@ -7,7 +7,7 @@ from pointnet_utils import STN3d, STNkd, feature_transform_reguliarzer
 
 
 class get_model(nn.Module):
-    def __init__(self, part_num=50, normal_channel=True):
+    def __init__(self, part_num=50, normal_channel=False):
         super(get_model, self).__init__()
         if normal_channel:
             channel = 6

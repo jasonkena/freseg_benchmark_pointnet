@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from time import time
 import numpy as np
+from pytorch3d.ops import ball_query
 
 def timeit(tag, t):
     print("{}: {}s".format(tag, time() - t))
@@ -57,6 +58,9 @@ def index_points(points, idx):
     repeat_shape[0] = 1
     batch_indices = torch.arange(B, dtype=torch.long).to(device).view(view_shape).repeat(repeat_shape)
     new_points = points[batch_indices, idx, :]
+
+    new_points[idx<0] = 0
+
     return new_points
 
 
@@ -87,24 +91,17 @@ def farthest_point_sample(xyz, npoint):
 def query_ball_point(radius, nsample, xyz, new_xyz):
     """
     Input:
-        radius: local region radius
-        nsample: max sample number in local region
-        xyz: all points, [B, N, 3]
-        new_xyz: query points, [B, S, 3]
+     radius: local region radius
+     nsample: max sample number in local region
+     xyz: all points, [B, N, 3]
+     new_xyz: query points, [B, S, 3]
     Return:
-        group_idx: grouped points index, [B, S, nsample]
+     group_idx: grouped points index, [B, S, nsample]
     """
-    device = xyz.device
-    B, N, C = xyz.shape
-    _, S, _ = new_xyz.shape
-    group_idx = torch.arange(N, dtype=torch.long).to(device).view(1, 1, N).repeat([B, S, 1])
-    sqrdists = square_distance(new_xyz, xyz)
-    group_idx[sqrdists > radius ** 2] = N
-    group_idx = group_idx.sort(dim=-1)[0][:, :, :nsample]
-    group_first = group_idx[:, :, 0].view(B, S, 1).repeat([1, 1, nsample])
-    mask = group_idx == N
-    group_idx[mask] = group_first[mask]
-    return group_idx
+    dists, idx, nn = ball_query(p1=new_xyz, p2=xyz, K=nsample,radius = radius)
+
+    return idx
+
 
 
 def sample_and_group(npoint, radius, nsample, xyz, points, returnfps=False):
