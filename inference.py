@@ -63,49 +63,59 @@ def inference():
     )
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, drop_last=False)
 
-    for fn, ct_list, label_list in tqdm(test_loader):
+    for fn, ct_list, ct_trans_list, label_list in tqdm(test_loader):
         if dry_run and (len(time_samples) > dry_run):
             break
         time_samples.append(0)
-        all_data = []
+        all_pc = []
+        all_pc_trans = []
         all_segs = []
         all_preds = []
 
+        assert len(ct_list) == len(ct_trans_list)
+
         for batch_idx in tqdm(range(0, len(ct_list), batch_size), leave=False):
-            points = ct_list[batch_idx : batch_idx + batch_size]
-            points = torch.cat(points, dim=0)
+            pc = ct_list[batch_idx : batch_idx + batch_size]
+            pc = torch.cat(pc, dim=0)
+            pc_trans = ct_trans_list[batch_idx : batch_idx + batch_size]
+            pc_trans = torch.cat(pc_trans, dim=0)
+
+            assert pc.shape == pc_trans.shape
+
             seg = label_list[batch_idx : batch_idx + batch_size]
             seg = torch.cat(seg, dim=0)
 
-            points, seg = (
-                points.to(device),
+            pc, pc_trans, seg = (
+                pc.to(device),
+                pc_trans.to(device),
                 seg.to(device),
             )
 
-            label = torch.zeros((points.shape[0], 16)).long().cuda()
-            points = points.transpose(2, 1)
+            label = torch.zeros((pc.shape[0], 16)).long().cuda()
+            pc = pc.transpose(2, 1)
+            pc_trans = pc_trans.transpose(2, 1)
 
             with torch.no_grad():
                 # [B, N, 25]
                 start = time.time()
-                seg_pred, _ = classifier(points, label)
+                # NOTE: important
+                seg_pred, _ = classifier(pc_trans if args.trans else pc, label)
                 end = time.time()
                 time_samples[-1] += end - start
                 seg_pred = seg_pred.reshape(-1, num_classes).contiguous()
 
-            points = points.transpose(2, 1).reshape(-1, 3).contiguous()
-            data_np = points.cpu().numpy()
-            seg_np = seg.cpu().numpy().reshape(-1)
-            pred_np = seg_pred.detach().cpu().numpy()
-            all_data.append(data_np)
-            all_segs.append(seg_np)
-            all_preds.append(pred_np)
-
+            pc = pc.transpose(2, 1).reshape(-1, 3).contiguous()
+            pc_trans = pc_trans.transpose(2, 1).reshape(-1, 3).contiguous()
+            all_pc.append(pc.cpu().numpy())
+            all_pc_trans.append(pc_trans.cpu().numpy())
+            all_segs.append(seg.cpu().numpy().reshape(-1))
+            all_preds.append(seg_pred.detach().cpu().numpy())
         if not dry_run:
             name = fn[0].split("/")[-1].split(".")[0]
             np.savez(
                 args.output_dir + "/" + name + ".npz",
-                data=np.concatenate(all_data, axis=0),
+                pc=np.concatenate(all_pc, axis=0),
+                pc_trans=np.concatenate(all_pc_trans, axis=0),
                 seg=np.concatenate(all_segs, axis=0),
                 pred=np.concatenate(all_preds, axis=0),
             )

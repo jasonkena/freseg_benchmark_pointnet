@@ -68,7 +68,7 @@ def parse_args():
     parser.add_argument("--optimizer", type=str, default="Adam", help="Adam or SGD")
     parser.add_argument("--log_dir", type=str, default=None, help="log path")
     parser.add_argument("--decay_rate", type=float, default=1e-4, help="weight decay")
-    parser.add_argument("--npoint", type=int, default=30000, help="point Number")
+    parser.add_argument("--npoint", type=int, default=2048, help="point Number")
     # parser.add_argument("--npoint", type=int, default=2048, help="point Number")
     parser.add_argument(
         "--step_size", type=int, default=20, help="decay step for lr decay"
@@ -78,8 +78,11 @@ def parse_args():
     )
     parser.add_argument("--dataset_path", type=str, default="", metavar="N")
     parser.add_argument("--disable_amp", action="store_true", help="AMP")
-    parser.add_argument("--folds", nargs="+", type=int, help="folds to use")
-    parser.add_argument("--test_folds", nargs="+", type=int, help="folds to use")
+    parser.add_argument("--folds", nargs="*", type=int, help="folds to use")
+    parser.add_argument("--test_folds", nargs="*", type=int, help="folds to use")
+    parser.add_argument(
+        "--trans", action="store_true", help="whether to use transformation"
+    )
 
     return parser.parse_args()
 
@@ -123,9 +126,7 @@ def main(args):
     log_string(args)
 
     TRAIN_DATASET = FreSegDataset(
-        root=args.dataset_path,
-        npoints=args.npoint,
-        folds=args.folds,
+        root=args.dataset_path, npoints=args.npoint, folds=args.folds, trans=args.trans
     )
     trainDataLoader = torch.utils.data.DataLoader(
         TRAIN_DATASET,
@@ -134,16 +135,17 @@ def main(args):
         num_workers=10,
         drop_last=True,
     )
-    TEST_DATASET = FreSegDataset(
-        root=args.dataset_path,
-        npoints=args.npoint,
-        folds=args.test_folds,
-    )
-    testDataLoader = torch.utils.data.DataLoader(
-        TEST_DATASET, batch_size=args.batch_size, shuffle=False, num_workers=10
-    )
+    # TEST_DATASET = FreSegDataset(
+    #     root=args.dataset_path,
+    #     npoints=args.npoint,
+    #     folds=args.test_folds,
+    #     trans=args.trans,
+    # )
+    # testDataLoader = torch.utils.data.DataLoader(
+    #     TEST_DATASET, batch_size=args.batch_size, shuffle=False, num_workers=10
+    # )
     log_string("The number of training data is: %d" % len(TRAIN_DATASET))
-    log_string("The number of test data is: %d" % len(TEST_DATASET))
+    # log_string("The number of test data is: %d" % len(TEST_DATASET))
 
     NUM_CLASSES = 2
 
