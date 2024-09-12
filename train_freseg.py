@@ -1,14 +1,11 @@
-"""
-Author: Benny
-Date: Nov 2019
-"""
 import argparse
 import os
 import sys
 
-sys.path.insert(1, os.path.join(sys.path[0], ".."))
-from freseg_dataset import FreSegDataset
 
+sys.path.append("/data/adhinart/dendrite/scripts/igneous")
+
+from dataloader import FreSegDataset
 import torch
 
 torch.autograd.set_detect_anomaly(True)
@@ -17,14 +14,15 @@ import datetime
 import logging
 import importlib
 import shutil
-import provider
+# import provider
 import numpy as np
+import contextlib
 import wandb
-
-wandb.init(project="freseg")
 
 from pathlib import Path
 from tqdm import tqdm
+
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = BASE_DIR
@@ -36,6 +34,58 @@ seg_classes = class2label
 seg_label_to_cat = {}
 for i, cat in enumerate(seg_classes.keys()):
     seg_label_to_cat[i] = cat
+
+    
+@contextlib.contextmanager
+def temp_seed(seed):
+    # https://stackoverflow.com/questions/49555991/can-i-create-a-local-numpy-random-seed
+    state = np.random.get_state()
+    np.random.seed(seed)
+    try:
+        yield
+    finally:
+        np.random.set_state(state)
+
+def ignore_trunk_pc(trunk_id, pc, trunk_pc, label):
+    # NOTE: trunk_pc has variable length and cannot be collated using default_collate
+    return trunk_id, pc, label
+
+def get_dataloader(path_length: float, num_points: int, fold: int, is_train: bool, batch_size: int, num_workers: int, seed: int):
+    assert fold in [0, 1, 2, 3, 4]
+
+    with temp_seed(seed):
+        dataset = FreSegDataset(
+            mapping_path="/data/adhinart/dendrite/scripts/igneous/outputs/seg_den/mapping.npy",
+            seed_path="/data/adhinart/dendrite/scripts/igneous/outputs/seg_den/seed.npz",
+            pc_zarr_path="/data/adhinart/dendrite/scripts/igneous/outputs/seg_den/pc.zarr",
+            pc_lengths_path="/data/adhinart/dendrite/scripts/igneous/outputs/seg_den/pc_lengths.npz",
+            path_length=path_length,
+            num_points=num_points,
+            anisotropy=[30, 6, 6],
+            folds=[
+                [3, 5, 11, 12, 23, 28, 29, 32, 39, 42],
+                [8, 15, 19, 27, 30, 34, 35, 36, 46, 49],
+                [9, 14, 16, 17, 21, 26, 31, 33, 43, 44],
+                [2, 6, 7, 13, 18, 24, 25, 38, 41, 50],
+                [1, 4, 10, 20, 22, 37, 40, 45, 47, 48],
+            ],
+            fold=fold,
+            is_train=is_train,
+            transform=ignore_trunk_pc,
+            num_threads=8
+        )
+
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=is_train,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=is_train,
+    )
+
+    return dataloader
+
 
 
 def inplace_relu(m):
@@ -51,7 +101,57 @@ def to_categorical(y, num_classes):
         return new_y.cuda()
     return new_y
 
+def rotation_matrix_3d():
+    """
+    Generate a random 3D rotation matrix.
+    """
+    # Random rotation angle for each axis
+    angles = np.random.uniform(0, 2*np.pi, 3)
+    
+    # Rotation matrices for each axis
+    Rx = np.array([[1, 0, 0],
+                   [0, np.cos(angles[0]), -np.sin(angles[0])],
+                   [0, np.sin(angles[0]), np.cos(angles[0])]])
+    
+    Ry = np.array([[np.cos(angles[1]), 0, np.sin(angles[1])],
+                   [0, 1, 0],
+                   [-np.sin(angles[1]), 0, np.cos(angles[1])]])
+    
+    Rz = np.array([[np.cos(angles[2]), -np.sin(angles[2]), 0],
+                   [np.sin(angles[2]), np.cos(angles[2]), 0],
+                   [0, 0, 1]])
+    
+    # Combine rotations
+    R = np.dot(Rz, np.dot(Ry, Rx))
+    return R
 
+def rotate_point_cloud(point_cloud):
+    """
+    Randomly rotate the point cloud to augment the dataset
+    rotation is fully 3D
+    Input:
+      point_cloud: Nx3 array, original point cloud
+    Return:
+      rotated_point_cloud: Nx3 array, rotated point cloud
+    """
+    rotation_matrix = rotation_matrix_3d()
+    rotated_point_cloud = np.dot(point_cloud, rotation_matrix.T)
+    return rotated_point_cloud
+
+def rotate_point_cloud_batch(batch_point_cloud):
+    """
+    Randomly rotate each point cloud in the batch
+    rotation is fully 3D
+    Input:
+      batch_point_cloud: BxNx3 array, original batch of point clouds
+    Return:
+      rotated_batch_point_cloud: BxNx3 array, rotated batch of point clouds
+    """
+    rotated_batch_point_cloud = np.zeros(batch_point_cloud.shape, dtype=np.float32)
+    for k in range(batch_point_cloud.shape[0]):
+        rotated_batch_point_cloud[k, ...] = rotate_point_cloud(batch_point_cloud[k, ...])
+    return rotated_batch_point_cloud
+    
 def parse_args():
     parser = argparse.ArgumentParser("Model")
     parser.add_argument(
@@ -76,13 +176,14 @@ def parse_args():
     parser.add_argument(
         "--lr_decay", type=float, default=0.5, help="decay rate for lr decay"
     )
-    parser.add_argument("--dataset_path", type=str, default="", metavar="N")
     parser.add_argument("--disable_amp", action="store_true", help="AMP")
-    parser.add_argument("--folds", nargs="*", type=int, help="folds to use")
-    parser.add_argument("--test_folds", nargs="*", type=int, help="folds to use")
-    parser.add_argument(
-        "--trans", action="store_true", help="whether to use transformation"
-    )
+    parser.add_argument("--trans", action="store_true", help="whether to use transformation")
+    # parser.add_argument("--tnb", action="store_true", help="whether to use transformation")
+    parser.add_argument("--ratio", type=float, default=1, help="training data scale")
+
+    parser.add_argument("--path_length", type=float, help="path length")
+    parser.add_argument("--fold", type=int, help="fold")
+    parser.add_argument("--num_workers", type=int, default=16, help="num workers")
 
     return parser.parse_args()
 
@@ -92,6 +193,8 @@ def main(args):
         logger.info(str)
         print(str)
 
+    wandb.init(project="freseg_baseline",name = args.log_dir)
+
     """HYPER PARAMETER"""
     # os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
@@ -99,7 +202,7 @@ def main(args):
     timestr = str(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M"))
     exp_dir = Path("./log/")
     exp_dir.mkdir(exist_ok=True)
-    exp_dir = exp_dir.joinpath("freseg")
+    exp_dir = exp_dir.joinpath(f"freseg_{args.fold}_{args.path_length}_{args.npoint}")
     exp_dir.mkdir(exist_ok=True)
     if args.log_dir is None:
         exp_dir = exp_dir.joinpath(timestr)
@@ -124,28 +227,6 @@ def main(args):
     logger.addHandler(file_handler)
     log_string("PARAMETER ...")
     log_string(args)
-
-    TRAIN_DATASET = FreSegDataset(
-        root=args.dataset_path, npoints=args.npoint, folds=args.folds, trans=args.trans
-    )
-    trainDataLoader = torch.utils.data.DataLoader(
-        TRAIN_DATASET,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=10,
-        drop_last=True,
-    )
-    # TEST_DATASET = FreSegDataset(
-    #     root=args.dataset_path,
-    #     npoints=args.npoint,
-    #     folds=args.test_folds,
-    #     trans=args.trans,
-    # )
-    # testDataLoader = torch.utils.data.DataLoader(
-    #     TEST_DATASET, batch_size=args.batch_size, shuffle=False, num_workers=10
-    # )
-    log_string("The number of training data is: %d" % len(TRAIN_DATASET))
-    # log_string("The number of test data is: %d" % len(TEST_DATASET))
 
     NUM_CLASSES = 2
 
@@ -199,12 +280,37 @@ def main(args):
     MOMENTUM_DECCAY = 0.5
     MOMENTUM_DECCAY_STEP = args.step_size
 
-    best_acc = 0
     global_epoch = 0
-    best_class_avg_iou = 0
-    best_inctance_avg_iou = 0
+    try:
+        best_eval_dice_ann = checkpoint["best_eval_dice_ann"]
+        log_string("best_eval_dice_ann:%f" % best_eval_dice_ann)
+    except:
+        best_eval_dice_ann = 0
+        log_string("best_eval_dice_ann:%f" % best_eval_dice_ann)
+
+    # val and test dataloaders are fixed
+    testDataLoader = get_dataloader(
+        path_length=args.path_length,
+        num_points=args.npoint,
+        fold=args.fold,
+        is_train=False,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        seed=0, # NOTE: seed is fixed
+    )
+    valDataLoader = testDataLoader
 
     for epoch in range(start_epoch, args.epoch):
+        trainDataLoader = get_dataloader(
+            path_length=args.path_length,
+            num_points=args.npoint,
+            fold=args.fold,
+            is_train=True,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            seed=epoch,
+        )
+
         mean_correct = []
 
         log_string("Epoch %d (%d/%s):" % (global_epoch + 1, epoch + 1, args.epoch))
@@ -226,16 +332,11 @@ def main(args):
         classifier = classifier.train()
 
         """learning one epoch"""
-        for i, (points, target) in tqdm(
-            enumerate(trainDataLoader), total=len(trainDataLoader), smoothing=0.9
-        ):
+        for i, (trunk_id, points, target) in tqdm(enumerate(trainDataLoader), total=len(trainDataLoader), smoothing=0.9):
             optimizer.zero_grad()
-
-            points = points.data.numpy()
-            # disable scale and shift augmentations
-            # points[:, :, 0:3] = provider.random_scale_point_cloud(points[:, :, 0:3])
-            # points[:, :, 0:3] = provider.shift_point_cloud(points[:, :, 0:3])
-            points = torch.Tensor(points)
+            # points = points.data.numpy()
+            # points = rotate_point_cloud_batch(points[:, :,:3])
+            # points = torch.Tensor(points)
             points, target = (
                 points.float().cuda(),
                 target.long().cuda(),
@@ -253,33 +354,127 @@ def main(args):
 
                 correct = pred_choice.eq(target.data).cpu().sum()
                 mean_correct.append(correct.item() / (args.batch_size * args.npoint))
+                # print(seg_pred.shape,target.shape,trans_feat.shape)
                 loss = criterion(seg_pred, target, trans_feat)
                 wandb.log({"train_loss": loss.item(), "epoch": epoch})
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
 
-        train_instance_acc = np.mean(mean_correct)
-        log_string("Train accuracy is: %.5f" % train_instance_acc)
+        if epoch >= 0:
+            with torch.no_grad():
+                eval_dice_ann = []
+                eval_dice_ves = []
+                eval_acc = []
+                
+                classifier = classifier.eval()
+                for i, (points, target,_) in tqdm(enumerate(valDataLoader), total=len(valDataLoader), smoothing=0.9):
+                    # points = points.data.numpy()
+                    # points = points if args.tnb else points[:, :,:3] 
+                    # points = torch.Tensor(points)
+                    points, target = (
+                        points.float().cuda(),
+                        target.long().cuda(),
+                    )
+                    label = torch.zeros((points.shape[0], 16)).long().cuda()
+                    points = points.transpose(2, 1)
 
-        logger.info("Save model...")
-        savepath = str(checkpoints_dir) + "/best_model.pth"
-        log_string("Saving at %s" % savepath)
-        state = {
-            "epoch": epoch,
-            "train_acc": train_instance_acc,
-            "model_state_dict": classifier.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-        }
-        torch.save(state, savepath)
-        log_string("Saving model....")
+                    with torch.amp.autocast(
+                        device_type="cuda", dtype=torch.bfloat16, enabled=(not args.disable_amp)
+                    ):
+                        seg_pred, trans_feat = classifier(points, label)
+                        seg_pred = seg_pred.contiguous().view(-1, NUM_CLASSES)
+                        target = target.view(-1, 1)[:, 0]
+                        pred_choice = seg_pred.data.max(1)[1]
+            
+                        correct = pred_choice.eq(target.data).cpu().sum()
+                        eval_acc.append(correct.item() / (args.batch_size * args.npoint))
+                        pred_choice = pred_choice.clone().cpu().numpy()
+                        target = target.clone().cpu().numpy()
+                        eval_dice_ann.append(2*(target*pred_choice).sum() / (target.sum()+pred_choice.sum()))
+                        target = 1 - target
+                        pred_choice = 1- pred_choice
+                        eval_dice_ves.append(2*(target*pred_choice).sum() / (target.sum()+pred_choice.sum()))
 
-        log_string("Best accuracy is: %.5f" % best_acc)
-        log_string("Best class avg mIOU is: %.5f" % best_class_avg_iou)
-        log_string("Best inctance avg mIOU is: %.5f" % best_inctance_avg_iou)
+            train_instance_acc = np.mean(mean_correct)
+            log_string("Train accuracy is: %.5f" % train_instance_acc)
+            eval_acc = np.mean(eval_acc)
+            log_string("Test accuracy is: %.5f" % eval_acc)
+            eval_dice_ann = np.mean(eval_dice_ann)
+            log_string("Test Ann Dice is: %.5f" % eval_dice_ann)
+            eval_dice_ves = np.mean(eval_dice_ves)
+            log_string("Test Ves Dice is: %.5f" % eval_dice_ves)
+
+            wandb.log({"eval_acc": eval_acc, "epoch": epoch})
+            wandb.log({"eval_dice_ann": eval_dice_ann, "epoch": epoch})
+            wandb.log({"eval_dice_ves": eval_dice_ves, "epoch": epoch})
+
+            if eval_dice_ann > best_eval_dice_ann:
+                logger.info("Save model...")
+                best_eval_dice_ann = eval_dice_ann
+                savepath = str(checkpoints_dir) + "/best_model.pth"
+                log_string("Saving at %s" % savepath)
+                state = {
+                    "epoch": epoch,
+                    "train_acc": train_instance_acc,
+                    "acc": eval_acc,
+                    "best_dice_ann": best_eval_dice_ann,
+                    "eval_dice_ves": eval_dice_ves,
+                    "eval_dice_ann": eval_dice_ann,
+                    "model_state_dict": classifier.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                }
+                torch.save(state, savepath)
+                log_string("Saving model....")
+
         global_epoch += 1
+    log_string("Training completed.")
+    checkpoint = torch.load(savepath)
+    log_string("Val Ann Dice is: %.5f" % checkpoint["eval_dice_ann"])
+    log_string("Val Ves Dice is: %.5f" % checkpoint["eval_dice_ves"])
+
+    best_model = MODEL.get_model(NUM_CLASSES, normal_channel=False).cuda()
+    best_model.load_state_dict(checkpoint["model_state_dict"])
+    test_dice_ann, test_dice_ves, test_acc = evaluate(testDataLoader, best_model, criterion, args)
+    
+    log_string(f"Test Accuracy: {test_acc:.5f}")
+    log_string(f"Test Ann Dice: {test_dice_ann:.5f}")
+    log_string(f"Test Ves Dice: {test_dice_ves:.5f}")
+
+    
+def evaluate(dataloader, model, criterion, args):
+    model.eval()
+    dice_ann = []
+    dice_ves = []
+    accuracies = []
+    
+    with torch.no_grad():
+        for points, target, _ in tqdm(dataloader, total=len(dataloader), smoothing=0.9):
+            points, target = points.float().cuda(), target.long().cuda()
+            label = torch.zeros((points.shape[0], 16)).long().cuda()
+            points = points.transpose(2, 1)
+
+            with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=(not args.disable_amp)):
+                seg_pred, _ = model(points, label)
+                seg_pred = seg_pred.contiguous().view(-1, 2)
+                target = target.view(-1, 1)[:, 0]
+                pred_choice = seg_pred.data.max(1)[1]
+
+                correct = pred_choice.eq(target.data).cpu().sum()
+                accuracies.append(correct.item() / (args.batch_size * args.npoint))
+
+                pred_choice = pred_choice.cpu().numpy()
+                target = target.cpu().numpy()
+                dice_ann.append(2 * (target * pred_choice).sum() / (target.sum() + pred_choice.sum()))
+                target = 1 - target
+                pred_choice = 1 - pred_choice
+                dice_ves.append(2 * (target * pred_choice).sum() / (target.sum() + pred_choice.sum()))
+
+    return np.mean(dice_ann), np.mean(dice_ves), np.mean(accuracies)
+
 
 
 if __name__ == "__main__":
     args = parse_args()
     main(args)
+
