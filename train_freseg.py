@@ -2,10 +2,9 @@ import argparse
 import os
 import sys
 
-
 sys.path.append("/data/adhinart/dendrite/scripts/igneous")
 
-from dataloader import FreSegDataset
+from cache_dataloader import CachedDataset
 import torch
 
 torch.autograd.set_detect_anomaly(True)
@@ -16,7 +15,6 @@ import importlib
 import shutil
 # import provider
 import numpy as np
-import contextlib
 import wandb
 
 from pathlib import Path
@@ -36,44 +34,27 @@ for i, cat in enumerate(seg_classes.keys()):
     seg_label_to_cat[i] = cat
 
     
-@contextlib.contextmanager
-def temp_seed(seed):
-    # https://stackoverflow.com/questions/49555991/can-i-create-a-local-numpy-random-seed
-    state = np.random.get_state()
-    np.random.seed(seed)
-    try:
-        yield
-    finally:
-        np.random.set_state(state)
-
 def ignore_trunk_pc(trunk_id, pc, trunk_pc, label):
     # NOTE: trunk_pc has variable length and cannot be collated using default_collate
     return trunk_id, pc, label
 
-def get_dataloader(path_length: float, num_points: int, fold: int, is_train: bool, batch_size: int, num_workers: int, seed: int):
+def get_dataloader(path_length: int, num_points: int, fold: int, is_train: bool, batch_size: int, num_workers: int):
     assert fold in [0, 1, 2, 3, 4]
 
-    with temp_seed(seed):
-        dataset = FreSegDataset(
-            mapping_path="/data/adhinart/dendrite/scripts/igneous/outputs/seg_den/mapping.npy",
-            seed_path="/data/adhinart/dendrite/scripts/igneous/outputs/seg_den/seed.npz",
-            pc_zarr_path="/data/adhinart/dendrite/scripts/igneous/outputs/seg_den/pc.zarr",
-            pc_lengths_path="/data/adhinart/dendrite/scripts/igneous/outputs/seg_den/pc_lengths.npz",
-            path_length=path_length,
-            num_points=num_points,
-            anisotropy=[30, 6, 6],
-            folds=[
-                [3, 5, 11, 12, 23, 28, 29, 32, 39, 42],
-                [8, 15, 19, 27, 30, 34, 35, 36, 46, 49],
-                [9, 14, 16, 17, 21, 26, 31, 33, 43, 44],
-                [2, 6, 7, 13, 18, 24, 25, 38, 41, 50],
-                [1, 4, 10, 20, 22, 37, 40, 45, 47, 48],
-            ],
-            fold=fold,
-            is_train=is_train,
-            transform=ignore_trunk_pc,
-            num_threads=8
-        )
+
+    dataset = CachedDataset(
+        f"/data/adhinart/dendrite/scripts/igneous/outputs/seg_den/dataset_-1_{path_length}_{num_points}",
+        folds=[
+            [3, 5, 11, 12, 23, 28, 29, 32, 39, 42],
+            [8, 15, 19, 27, 30, 34, 35, 36, 46, 49],
+            [9, 14, 16, 17, 21, 26, 31, 33, 43, 44],
+            [2, 6, 7, 13, 18, 24, 25, 38, 41, 50],
+            [1, 4, 10, 20, 22, 37, 40, 45, 47, 48],
+        ],
+        fold=fold,
+        is_train=is_train,
+        transform=ignore_trunk_pc,
+    )
 
     dataloader = torch.utils.data.DataLoader(
         dataset,
@@ -181,7 +162,7 @@ def parse_args():
     # parser.add_argument("--tnb", action="store_true", help="whether to use transformation")
     parser.add_argument("--ratio", type=float, default=1, help="training data scale")
 
-    parser.add_argument("--path_length", type=float, help="path length")
+    parser.add_argument("--path_length", type=int, help="path length")
     parser.add_argument("--fold", type=int, help="fold")
     parser.add_argument("--num_workers", type=int, default=16, help="num workers")
 
@@ -296,7 +277,6 @@ def main(args):
         is_train=False,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        seed=0, # NOTE: seed is fixed
     )
     valDataLoader = testDataLoader
 
@@ -308,7 +288,6 @@ def main(args):
             is_train=True,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
-            seed=epoch,
         )
 
         mean_correct = []
@@ -368,7 +347,7 @@ def main(args):
                 eval_acc = []
                 
                 classifier = classifier.eval()
-                for i, (points, target,_) in tqdm(enumerate(valDataLoader), total=len(valDataLoader), smoothing=0.9):
+                for i, (trunk_id, points, target) in tqdm(enumerate(valDataLoader), total=len(valDataLoader), smoothing=0.9):
                     # points = points.data.numpy()
                     # points = points if args.tnb else points[:, :,:3] 
                     # points = torch.Tensor(points)
