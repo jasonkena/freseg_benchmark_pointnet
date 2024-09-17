@@ -13,6 +13,7 @@ import datetime
 import logging
 import importlib
 import shutil
+
 # import provider
 import numpy as np
 import wandb
@@ -20,7 +21,7 @@ import wandb
 from pathlib import Path
 from tqdm import tqdm
 
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = BASE_DIR
@@ -33,14 +34,21 @@ seg_label_to_cat = {}
 for i, cat in enumerate(seg_classes.keys()):
     seg_label_to_cat[i] = cat
 
-    
+
 def ignore_trunk_pc(trunk_id, pc, trunk_pc, label):
     # NOTE: trunk_pc has variable length and cannot be collated using default_collate
     return trunk_id, pc, label
 
-def get_dataloader(path_length: int, num_points: int, fold: int, is_train: bool, batch_size: int, num_workers: int):
-    assert fold in [0, 1, 2, 3, 4]
 
+def get_dataloader(
+    path_length: int,
+    num_points: int,
+    fold: int,
+    is_train: bool,
+    batch_size: int,
+    num_workers: int,
+):
+    assert fold in [0, 1, 2, 3, 4]
 
     dataset = CachedDataset(
         f"/data/adhinart/dendrite/scripts/igneous/outputs/seg_den/dataset_-1_{path_length}_{num_points}",
@@ -68,7 +76,6 @@ def get_dataloader(path_length: int, num_points: int, fold: int, is_train: bool,
     return dataloader
 
 
-
 def inplace_relu(m):
     classname = m.__class__.__name__
     if classname.find("ReLU") != -1:
@@ -82,29 +89,43 @@ def to_categorical(y, num_classes):
         return new_y.cuda()
     return new_y
 
+
 def rotation_matrix_3d():
     """
     Generate a random 3D rotation matrix.
     """
     # Random rotation angle for each axis
-    angles = np.random.uniform(0, 2*np.pi, 3)
-    
+    angles = np.random.uniform(0, 2 * np.pi, 3)
+
     # Rotation matrices for each axis
-    Rx = np.array([[1, 0, 0],
-                   [0, np.cos(angles[0]), -np.sin(angles[0])],
-                   [0, np.sin(angles[0]), np.cos(angles[0])]])
-    
-    Ry = np.array([[np.cos(angles[1]), 0, np.sin(angles[1])],
-                   [0, 1, 0],
-                   [-np.sin(angles[1]), 0, np.cos(angles[1])]])
-    
-    Rz = np.array([[np.cos(angles[2]), -np.sin(angles[2]), 0],
-                   [np.sin(angles[2]), np.cos(angles[2]), 0],
-                   [0, 0, 1]])
-    
+    Rx = np.array(
+        [
+            [1, 0, 0],
+            [0, np.cos(angles[0]), -np.sin(angles[0])],
+            [0, np.sin(angles[0]), np.cos(angles[0])],
+        ]
+    )
+
+    Ry = np.array(
+        [
+            [np.cos(angles[1]), 0, np.sin(angles[1])],
+            [0, 1, 0],
+            [-np.sin(angles[1]), 0, np.cos(angles[1])],
+        ]
+    )
+
+    Rz = np.array(
+        [
+            [np.cos(angles[2]), -np.sin(angles[2]), 0],
+            [np.sin(angles[2]), np.cos(angles[2]), 0],
+            [0, 0, 1],
+        ]
+    )
+
     # Combine rotations
     R = np.dot(Rz, np.dot(Ry, Rx))
     return R
+
 
 def rotate_point_cloud(point_cloud):
     """
@@ -119,6 +140,7 @@ def rotate_point_cloud(point_cloud):
     rotated_point_cloud = np.dot(point_cloud, rotation_matrix.T)
     return rotated_point_cloud
 
+
 def rotate_point_cloud_batch(batch_point_cloud):
     """
     Randomly rotate each point cloud in the batch
@@ -130,9 +152,12 @@ def rotate_point_cloud_batch(batch_point_cloud):
     """
     rotated_batch_point_cloud = np.zeros(batch_point_cloud.shape, dtype=np.float32)
     for k in range(batch_point_cloud.shape[0]):
-        rotated_batch_point_cloud[k, ...] = rotate_point_cloud(batch_point_cloud[k, ...])
+        rotated_batch_point_cloud[k, ...] = rotate_point_cloud(
+            batch_point_cloud[k, ...]
+        )
     return rotated_batch_point_cloud
-    
+
+
 def parse_args():
     parser = argparse.ArgumentParser("Model")
     parser.add_argument(
@@ -158,7 +183,9 @@ def parse_args():
         "--lr_decay", type=float, default=0.5, help="decay rate for lr decay"
     )
     parser.add_argument("--disable_amp", action="store_true", help="AMP")
-    parser.add_argument("--trans", action="store_true", help="whether to use transformation")
+    parser.add_argument(
+        "--trans", action="store_true", help="whether to use transformation"
+    )
     # parser.add_argument("--tnb", action="store_true", help="whether to use transformation")
     parser.add_argument("--ratio", type=float, default=1, help="training data scale")
 
@@ -174,7 +201,7 @@ def main(args):
         logger.info(str)
         print(str)
 
-    wandb.init(project="freseg_baseline",name = args.log_dir)
+    wandb.init(project="freseg_baseline", name=args.log_dir)
 
     """HYPER PARAMETER"""
     # os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
@@ -311,7 +338,9 @@ def main(args):
         classifier = classifier.train()
 
         """learning one epoch"""
-        for i, (trunk_id, points, target) in tqdm(enumerate(trainDataLoader), total=len(trainDataLoader), smoothing=0.9):
+        for i, (trunk_id, points, target) in tqdm(
+            enumerate(trainDataLoader), total=len(trainDataLoader), smoothing=0.9
+        ):
             optimizer.zero_grad()
             # points = points.data.numpy()
             # points = rotate_point_cloud_batch(points[:, :,:3])
@@ -345,11 +374,13 @@ def main(args):
                 eval_dice_ann = []
                 eval_dice_ves = []
                 eval_acc = []
-                
+
                 classifier = classifier.eval()
-                for i, (trunk_id, points, target) in tqdm(enumerate(valDataLoader), total=len(valDataLoader), smoothing=0.9):
+                for i, (trunk_id, points, target) in tqdm(
+                    enumerate(valDataLoader), total=len(valDataLoader), smoothing=0.9
+                ):
                     # points = points.data.numpy()
-                    # points = points if args.tnb else points[:, :,:3] 
+                    # points = points if args.tnb else points[:, :,:3]
                     # points = torch.Tensor(points)
                     points, target = (
                         points.float().cuda(),
@@ -359,21 +390,33 @@ def main(args):
                     points = points.transpose(2, 1)
 
                     with torch.amp.autocast(
-                        device_type="cuda", dtype=torch.bfloat16, enabled=(not args.disable_amp)
+                        device_type="cuda",
+                        dtype=torch.bfloat16,
+                        enabled=(not args.disable_amp),
                     ):
                         seg_pred, trans_feat = classifier(points, label)
                         seg_pred = seg_pred.contiguous().view(-1, NUM_CLASSES)
                         target = target.view(-1, 1)[:, 0]
                         pred_choice = seg_pred.data.max(1)[1]
-            
+
                         correct = pred_choice.eq(target.data).cpu().sum()
-                        eval_acc.append(correct.item() / (args.batch_size * args.npoint))
+                        eval_acc.append(
+                            correct.item() / (args.batch_size * args.npoint)
+                        )
                         pred_choice = pred_choice.clone().cpu().numpy()
                         target = target.clone().cpu().numpy()
-                        eval_dice_ann.append(2*(target*pred_choice).sum() / (target.sum()+pred_choice.sum()))
+                        eval_dice_ann.append(
+                            2
+                            * (target * pred_choice).sum()
+                            / (target.sum() + pred_choice.sum())
+                        )
                         target = 1 - target
-                        pred_choice = 1- pred_choice
-                        eval_dice_ves.append(2*(target*pred_choice).sum() / (target.sum()+pred_choice.sum()))
+                        pred_choice = 1 - pred_choice
+                        eval_dice_ves.append(
+                            2
+                            * (target * pred_choice).sum()
+                            / (target.sum() + pred_choice.sum())
+                        )
 
             train_instance_acc = np.mean(mean_correct)
             log_string("Train accuracy is: %.5f" % train_instance_acc)
@@ -414,26 +457,30 @@ def main(args):
 
     best_model = MODEL.get_model(NUM_CLASSES, normal_channel=False).cuda()
     best_model.load_state_dict(checkpoint["model_state_dict"])
-    test_dice_ann, test_dice_ves, test_acc = evaluate(testDataLoader, best_model, criterion, args)
-    
+    test_dice_ann, test_dice_ves, test_acc = evaluate(
+        testDataLoader, best_model, criterion, args
+    )
+
     log_string(f"Test Accuracy: {test_acc:.5f}")
     log_string(f"Test Ann Dice: {test_dice_ann:.5f}")
     log_string(f"Test Ves Dice: {test_dice_ves:.5f}")
 
-    
+
 def evaluate(dataloader, model, criterion, args):
     model.eval()
     dice_ann = []
     dice_ves = []
     accuracies = []
-    
+
     with torch.no_grad():
         for points, target, _ in tqdm(dataloader, total=len(dataloader), smoothing=0.9):
             points, target = points.float().cuda(), target.long().cuda()
             label = torch.zeros((points.shape[0], 16)).long().cuda()
             points = points.transpose(2, 1)
 
-            with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=(not args.disable_amp)):
+            with torch.amp.autocast(
+                device_type="cuda", dtype=torch.bfloat16, enabled=(not args.disable_amp)
+            ):
                 seg_pred, _ = model(points, label)
                 seg_pred = seg_pred.contiguous().view(-1, 2)
                 target = target.view(-1, 1)[:, 0]
@@ -444,16 +491,22 @@ def evaluate(dataloader, model, criterion, args):
 
                 pred_choice = pred_choice.cpu().numpy()
                 target = target.cpu().numpy()
-                dice_ann.append(2 * (target * pred_choice).sum() / (target.sum() + pred_choice.sum()))
+                dice_ann.append(
+                    2
+                    * (target * pred_choice).sum()
+                    / (target.sum() + pred_choice.sum())
+                )
                 target = 1 - target
                 pred_choice = 1 - pred_choice
-                dice_ves.append(2 * (target * pred_choice).sum() / (target.sum() + pred_choice.sum()))
+                dice_ves.append(
+                    2
+                    * (target * pred_choice).sum()
+                    / (target.sum() + pred_choice.sum())
+                )
 
     return np.mean(dice_ann), np.mean(dice_ves), np.mean(accuracies)
-
 
 
 if __name__ == "__main__":
     args = parse_args()
     main(args)
-
