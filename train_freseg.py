@@ -1,10 +1,13 @@
 import argparse
 import os
 import sys
+from functools import partial
 
 sys.path.append("/data/adhinart/dendrite/scripts/igneous")
 
 from cache_dataloader import CachedDataset
+from frenet import frenet_transformation
+
 import torch
 
 torch.autograd.set_detect_anomaly(True)
@@ -35,8 +38,32 @@ for i, cat in enumerate(seg_classes.keys()):
     seg_label_to_cat[i] = cat
 
 
-def ignore_trunk_pc(trunk_id, pc, trunk_pc, label):
+def transformation(trunk_id, pc, trunk_pc, label, frenet: bool):
+    """
+    Normalize the point cloud to unit sphere
+    do frenet transformation
+
+    Parameters
+    ----------
+    trunk_id : int
+    pc : [TODO:type]
+    trunk_pc : [TODO:type]
+    label : [TODO:type]
+    frenet : whether not to do FreNet transformation
+    """
+
+    if frenet:
+        pc, trunk_pc, label = frenet_transformation(pc, trunk_pc, label)
+
     # NOTE: trunk_pc has variable length and cannot be collated using default_collate
+    # normalize [N, 3] to unit sphere
+    pc = pc - np.mean(pc, axis=0)
+    m = np.max(np.sqrt(np.sum(pc**2, axis=1)))
+    pc = pc / m
+
+    # binarize label
+    label = label > 0
+
     return trunk_id, pc, label
 
 
@@ -47,11 +74,13 @@ def get_dataloader(
     is_train: bool,
     batch_size: int,
     num_workers: int,
+    frenet: bool,
 ):
     assert fold in [0, 1, 2, 3, 4]
 
     dataset = CachedDataset(
-        f"/data/adhinart/dendrite/scripts/igneous/outputs/seg_den/dataset_-1_{path_length}_{num_points}",
+        f"/data/adhinart/dendrite/scripts/igneous/outputs/seg_den/dataset_1000000_{path_length}",
+        num_points=num_points,
         folds=[
             [3, 5, 11, 12, 23, 28, 29, 32, 39, 42],
             [8, 15, 19, 27, 30, 34, 35, 36, 46, 49],
@@ -61,7 +90,7 @@ def get_dataloader(
         ],
         fold=fold,
         is_train=is_train,
-        transform=ignore_trunk_pc,
+        transform=partial(transformation, frenet=frenet),
     )
 
     dataloader = torch.utils.data.DataLoader(
@@ -193,6 +222,10 @@ def parse_args():
     parser.add_argument("--fold", type=int, help="fold")
     parser.add_argument("--num_workers", type=int, default=16, help="num workers")
 
+    parser.add_argument(
+        "--frenet", action="store_true", help="whether to use Frenet transformation"
+    )
+
     return parser.parse_args()
 
 
@@ -210,7 +243,9 @@ def main(args):
     timestr = str(datetime.datetime.now().strftime("%Y-%m-%d_%H-%M"))
     exp_dir = Path("./log/")
     exp_dir.mkdir(exist_ok=True)
-    exp_dir = exp_dir.joinpath(f"freseg_{args.fold}_{args.path_length}_{args.npoint}")
+    exp_dir = exp_dir.joinpath(
+        f"freseg_{args.fold}_{args.path_length}_{args.npoint}_{args.frenet}"
+    )
     exp_dir.mkdir(exist_ok=True)
     if args.log_dir is None:
         exp_dir = exp_dir.joinpath(timestr)
@@ -293,7 +328,8 @@ def main(args):
         best_eval_dice_ann = checkpoint["best_eval_dice_ann"]
         log_string("best_eval_dice_ann:%f" % best_eval_dice_ann)
     except:
-        best_eval_dice_ann = 0
+        # -1 so eval_dice_ann > best_eval_dice_ann always triggers
+        best_eval_dice_ann = -1
         log_string("best_eval_dice_ann:%f" % best_eval_dice_ann)
 
     # val and test dataloaders are fixed
@@ -304,6 +340,7 @@ def main(args):
         is_train=False,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        frenet=args.frenet,
     )
     valDataLoader = testDataLoader
 
@@ -315,6 +352,7 @@ def main(args):
             is_train=True,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
+            frenet=args.frenet,
         )
 
         mean_correct = []
