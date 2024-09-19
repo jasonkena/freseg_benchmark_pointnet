@@ -68,6 +68,7 @@ def transformation(trunk_id, pc, trunk_pc, label, frenet: bool):
 
 
 def get_dataloader(
+    species: str,
     path_length: int,
     num_points: int,
     fold: int,
@@ -76,10 +77,11 @@ def get_dataloader(
     num_workers: int,
     frenet: bool,
 ):
-    assert fold in [0, 1, 2, 3, 4]
+    # assert fold in [0, 1, 2, 3, 4]
+    # not asserted since for mouse and human, all folds need to be used
 
     dataset = CachedDataset(
-        f"/data/adhinart/dendrite/scripts/igneous/outputs/seg_den/dataset_1000000_{path_length}",
+        f"/data/adhinart/dendrite/scripts/igneous/outputs/{species}/dataset_1000000_{path_length}",
         num_points=num_points,
         folds=[
             [3, 5, 11, 12, 23, 28, 29, 32, 39, 42],
@@ -334,6 +336,7 @@ def main(args):
 
     # val and test dataloaders are fixed
     testDataLoader = get_dataloader(
+        species="seg_den",
         path_length=args.path_length,
         num_points=args.npoint,
         fold=args.fold,
@@ -346,6 +349,7 @@ def main(args):
 
     for epoch in range(start_epoch, args.epoch):
         trainDataLoader = get_dataloader(
+            species="seg_den",
             path_length=args.path_length,
             num_points=args.npoint,
             fold=args.fold,
@@ -511,7 +515,9 @@ def evaluate(dataloader, model, criterion, args):
     accuracies = []
 
     with torch.no_grad():
-        for points, target, _ in tqdm(dataloader, total=len(dataloader), smoothing=0.9):
+        for trunk_id, points, target in tqdm(
+            dataloader, total=len(dataloader), smoothing=0.9
+        ):
             points, target = points.float().cuda(), target.long().cuda()
             label = torch.zeros((points.shape[0], 16)).long().cuda()
             points = points.transpose(2, 1)

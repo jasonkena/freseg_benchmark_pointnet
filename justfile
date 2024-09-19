@@ -9,6 +9,15 @@ WANDB__SERVICE_WAIT := "300"
 train cuda fold pathlength npoints:
     CUDA_VISIBLE_DEVICES={{cuda}} python train_freseg.py --model pointnet2_part_seg_msg --fold {{fold}} --path_length {{pathlength}} --npoint {{npoints}} --disable_amp
 
+train_frenet cuda fold pathlength npoints:
+    CUDA_VISIBLE_DEVICES={{cuda}} python train_freseg.py --model pointnet2_part_seg_msg --fold {{fold}} --path_length {{pathlength}} --npoint {{npoints}} --disable_amp --frenet
+
+evaluate cuda fold pathlength npoints:
+    CUDA_VISIBLE_DEVICES={{cuda}} python test_freseg.py --model pointnet2_part_seg_msg --fold {{fold}} --path_length {{pathlength}} --npoint {{npoints}} --disable_amp
+
+evaluate_frenet cuda fold pathlength npoints:
+    CUDA_VISIBLE_DEVICES={{cuda}} python test_freseg.py --model pointnet2_part_seg_msg --fold {{fold}} --path_length {{pathlength}} --npoint {{npoints}} --disable_amp --frenet
+
 #CHECKPOINT_BASE_PATH := "/data/adhinart/freseg/Pointnet_Pointnet2_pytorch/log/freseg"
 
 # NOTE change output path
