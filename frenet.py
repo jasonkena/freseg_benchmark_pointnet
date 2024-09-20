@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.interpolate import UnivariateSpline
+from scipy.spatial import KDTree
 
 
 def smooth_3d_array(points, num=None, **kwargs):
@@ -106,7 +107,25 @@ def calculate_tnb_frame(curve, epsilon=1e-8):
     return T, N, B
 
 
-def straighten_using_frenet(helix, points, skel_idx=None):
+def get_closest(pc_a, pc_b):
+    """
+    For each point in pc_a, find the closest point in pc_b
+    Returns the distance and index of the closest point in pc_b for each point in pc_a
+    Parameters
+    ----------
+    pc_a : [Mx3]
+    pc_b : [Nx3]
+    """
+    tree = KDTree(pc_b)
+    dist, idx = tree.query(pc_a, workers=-1)
+
+    if np.max(idx) >= pc_b.shape[0]:
+        raise ValueError("idx is out of range")
+
+    return dist, idx
+
+
+def straighten_using_frenet(helix, points):
     """
     Straighten the structure based on the helix (skeleton) using the Frenet frame.
 
@@ -135,70 +154,21 @@ def straighten_using_frenet(helix, points, skel_idx=None):
         )
     )
 
-    straightened_points = []
-    if skel_idx is not None:
-        for point_idx in range(points.shape[0]):
-            point = points[point_idx]
-            closest_idx = skel_idx[point_idx]
-
-            # Compute the vector from the closest helix point to the current point
-            vector = point - helix[closest_idx]
-
-            # Compute the azimuthal and polar angles using the Frenet frame
-            theta = np.arctan2(
-                np.dot(vector, N[closest_idx]), np.dot(vector, B[closest_idx])
-            )
-            phi = np.arccos(np.dot(vector, T[closest_idx]) / np.linalg.norm(vector))
-
-            # Compute the radius (distance to the helix)
-            r = np.linalg.norm(vector, axis=1)
-
-            # Map the point using the computed spherical coordinates
-            # # Mapping 1
-            # x = r * np.cos(theta)
-            # y = r * np.sin(theta)
-            # z = cumulative_distances[closest_idx]
-
-            # # Mapping 2
-            x = r * np.sin(phi) * np.cos(theta)
-            y = r * np.sin(phi) * np.sin(theta)
-            z = cumulative_distances[closest_idx] + r * np.cos(phi)
-
-            straightened_point = [x, y, z]
-            straightened_points.append(straightened_point)
-
-    else:
-        for point in points:
-            # Find closest point on the helix
-            deltas = helix - point
-            distances_to_helix = np.linalg.norm(deltas, axis=1)
-            closest_idx = np.argmin(distances_to_helix)
-
-            # Compute the vector from the closest helix point to the current point
-            vector = point - helix[closest_idx]
-
-            # Compute the azimuthal and polar angles using the Frenet frame
-            theta = np.arctan2(
-                np.dot(vector, N[closest_idx]), np.dot(vector, B[closest_idx])
-            )
-            phi = np.arccos(np.dot(vector, T[closest_idx]) / np.linalg.norm(vector))
-
-            # Compute the radius (distance to the helix)
-            r = distances_to_helix[closest_idx]
-
-            # # Map the point using the computed spherical coordinates
-            # # Mapping 1
-            # x = r * np.cos(theta)
-            # y = r * np.sin(theta)
-            # z = cumulative_distances[closest_idx]
-
-            # # Mapping 2
-            x = r * np.sin(phi) * np.cos(theta)
-            y = r * np.sin(phi) * np.sin(theta)
-            z = cumulative_distances[closest_idx] + r * np.cos(phi)
-
-            straightened_point = [x, y, z]
-            straightened_points.append(straightened_point)
+    distances_to_helix, closest_idxs = get_closest(points, helix)
+    vectors = points - helix[closest_idxs]
+    r = distances_to_helix
+    T_closest = T[closest_idxs]
+    N_closest = N[closest_idxs]
+    B_closest = B[closest_idxs]
+    theta = np.arctan2(
+        np.einsum("ij,ij->i", vectors, N_closest),
+        np.einsum("ij,ij->i", vectors, B_closest),
+    )
+    phi = np.arccos(np.einsum("ij,ij->i", vectors, T_closest) / r)
+    x = r * np.sin(phi) * np.cos(theta)
+    y = r * np.sin(phi) * np.sin(theta)
+    z = cumulative_distances[closest_idxs] + r * np.cos(phi)
+    straightened_points = np.column_stack((x, y, z))
 
     return straightened_helix, np.array(straightened_points)
 
