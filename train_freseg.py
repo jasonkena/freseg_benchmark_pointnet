@@ -60,9 +60,9 @@ def transformation(trunk_id, pc, trunk_pc, label, frenet: bool):
     pc = pc - np.mean(pc, axis=0)
     m = np.max(np.sqrt(np.sum(pc**2, axis=1)))
     pc = pc / m
-
-    # binarize label
-    label = label > 0
+    
+    # cast to int
+    label = label.astype(int)
 
     return trunk_id, pc, label
 
@@ -104,7 +104,7 @@ def get_dataloader(
         drop_last=is_train,
     )
 
-    return dataloader
+    return dataloader, dataset.files
 
 
 def inplace_relu(m):
@@ -335,7 +335,7 @@ def main(args):
         log_string("best_eval_dice_ann:%f" % best_eval_dice_ann)
 
     # val and test dataloaders are fixed
-    testDataLoader = get_dataloader(
+    testDataLoader, _ = get_dataloader(
         species="seg_den",
         path_length=args.path_length,
         num_points=args.npoint,
@@ -348,7 +348,7 @@ def main(args):
     valDataLoader = testDataLoader
 
     for epoch in range(start_epoch, args.epoch):
-        trainDataLoader = get_dataloader(
+        trainDataLoader, _ = get_dataloader(
             species="seg_den",
             path_length=args.path_length,
             num_points=args.npoint,
@@ -383,6 +383,7 @@ def main(args):
         for i, (trunk_id, points, target) in tqdm(
             enumerate(trainDataLoader), total=len(trainDataLoader), smoothing=0.9
         ):
+            target = target > 0
             optimizer.zero_grad()
             # points = points.data.numpy()
             # points = rotate_point_cloud_batch(points[:, :,:3])
@@ -421,6 +422,7 @@ def main(args):
                 for i, (trunk_id, points, target) in tqdm(
                     enumerate(valDataLoader), total=len(valDataLoader), smoothing=0.9
                 ):
+                    target = target > 0
                     # points = points.data.numpy()
                     # points = points if args.tnb else points[:, :,:3]
                     # points = torch.Tensor(points)
@@ -518,6 +520,7 @@ def evaluate(dataloader, model, criterion, args):
         for trunk_id, points, target in tqdm(
             dataloader, total=len(dataloader), smoothing=0.9
         ):
+            target = target > 0
             points, target = points.float().cuda(), target.long().cuda()
             label = torch.zeros((points.shape[0], 16)).long().cuda()
             points = points.transpose(2, 1)

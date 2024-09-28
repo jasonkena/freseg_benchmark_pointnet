@@ -7,20 +7,25 @@ import os
 import argparse
 import torch
 import importlib
+from tqdm import tqdm
+import math
+import numpy as np
 
-from train_freseg import get_dataloader, evaluate
+from train_freseg import get_dataloader
 
 
 def get_test_dataloaders(
     path_length: int,
-    num_points: int,
     fold: int,
-    batch_size: int,
     num_workers: int,
     frenet: bool,
 ):
+    num_points = 1000000
+    batch_size = 1
+
     datasets = {}
-    datasets["seg_den"] = get_dataloader(
+    files = {}
+    datasets["seg_den"], files["seg_den"] = get_dataloader(
         species="seg_den",
         path_length=path_length,
         num_points=num_points,
@@ -30,7 +35,7 @@ def get_test_dataloaders(
         num_workers=num_workers,
         frenet=frenet,
     )
-    datasets["mouse"] = get_dataloader(
+    datasets["mouse"], files["mouse"] = get_dataloader(
         species="mouse",
         path_length=path_length,
         num_points=num_points,
@@ -40,7 +45,7 @@ def get_test_dataloaders(
         num_workers=num_workers,
         frenet=frenet,
     )
-    datasets["human"] = get_dataloader(
+    datasets["human"], files["human"] = get_dataloader(
         species="human",
         path_length=path_length,
         num_points=num_points,
@@ -51,10 +56,65 @@ def get_test_dataloaders(
         frenet=frenet,
     )
 
-    return datasets
+    return datasets, files
 
 
-def main(args):
+def do_inference(dataloader, model, args, files, output_dir):
+    model.eval()
+    with torch.no_grad():
+        # NOTE: dataloader_idx assumes that shuffle is off (ie that is_train=False)
+        for dataloader_idx, (trunk_id, points, target) in tqdm(
+            enumerate(dataloader), total=len(dataloader), smoothing=0.9
+        ):
+            original_points = points
+            # NOTE: assumes order already randomized
+            # divide points into batches
+            assert points.shape[0] == 1 and target.shape[0] == 1
+            num_total_points = points.shape[1]
+
+            # ceil
+            num_batches = int(math.ceil(num_total_points / args.npoint))
+            padding = num_batches * args.npoint - num_total_points
+
+            if padding > 0:
+                points = torch.cat([points, points[:, :padding, :]], dim=1)
+            assert points.shape[1] % args.npoint == 0
+
+            # now reshape points to (num_batches, npoint, 3) and target to (num_batches, npoint)
+            points = points.view(num_batches, args.npoint, 3).float()
+            preds = []
+
+            for i in range(math.ceil(num_batches / args.batch_size)):
+                points_batch = points[
+                    i * args.batch_size : (i + 1) * args.batch_size
+                ].cuda()
+                label = torch.zeros((points_batch.shape[0], 16)).long().cuda()
+                points_batch = points_batch.transpose(2, 1)
+                with torch.amp.autocast(
+                    device_type="cuda",
+                    dtype=torch.bfloat16,
+                    enabled=(not args.disable_amp),
+                ):
+                    seg_pred, _ = model(points_batch, label)
+                    seg_pred = seg_pred.contiguous().view(-1, 2)
+                    pred_max = seg_pred.max(1)[1]
+
+                    preds.append(pred_max.cpu().numpy())
+
+            pred = np.concatenate(preds, axis=0)[:num_total_points]
+
+            np.savez(
+                os.path.join(output_dir, os.path.basename(files[dataloader_idx])),
+                trunk_id=trunk_id,
+                pc=original_points.squeeze(0).numpy(),
+                trunk_pc=np.load(files[dataloader_idx])["trunk_pc"],
+                label=target.squeeze(0).numpy(),
+                pred=pred,
+            )
+
+
+def inference(args):
+    # NOTE: batch_size will be for number of 30k samples out of 1M
     exp_dir = Path("./log/")
     exp_dir = exp_dir.joinpath(
         f"freseg_{args.fold}_{args.path_length}_{args.npoint}_{args.frenet}"
@@ -65,6 +125,8 @@ def main(args):
     checkpoints_dir = exp_dir.joinpath("checkpoints/")
     savepath = str(checkpoints_dir) + "/best_model.pth"
 
+    output_path = exp_dir.joinpath("output/")
+
     checkpoint = torch.load(savepath)
 
     MODEL = importlib.import_module(args.model)
@@ -74,11 +136,11 @@ def main(args):
     best_model.load_state_dict(checkpoint["model_state_dict"])
     print(f"Loaded model from {savepath}")
 
-    dataloaders = get_test_dataloaders(
+    # args.npoint,
+    # args.batch_size,
+    dataloaders, files = get_test_dataloaders(
         args.path_length,
-        args.npoint,
         args.fold,
-        args.batch_size,
         args.num_workers,
         args.frenet,
     )
@@ -88,14 +150,15 @@ def main(args):
         f"Loaded model from {savepath}, fold {args.fold}, path_length {args.path_length}, npoint {args.npoint}, frenet {args.frenet}"
     )
     for dataset_name, dataloader in dataloaders.items():
-        test_dice_ann, test_dice_ves, test_acc = evaluate(
-            dataloader, best_model, None, args
+        if not output_path.joinpath(dataset_name).exists():
+            output_path.joinpath(dataset_name).mkdir(parents=True)
+        do_inference(
+            dataloader,
+            best_model,
+            args,
+            files[dataset_name],
+            output_path.joinpath(dataset_name),
         )
-
-        print(f"Dataset: {dataset_name}")
-        print(f"Test Accuracy: {test_acc:.5f}")
-        print(f"Test Ann Dice: {test_dice_ann:.5f}")
-        print(f"Test Ves Dice: {test_dice_ves:.5f}")
 
 
 if __name__ == "__main__":
@@ -117,4 +180,5 @@ if __name__ == "__main__":
     parser.add_argument("--disable_amp", action="store_true", help="AMP")
 
     args = parser.parse_args()
-    main(args)
+
+    inference(args)
