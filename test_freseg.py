@@ -10,8 +10,12 @@ import importlib
 from tqdm import tqdm
 import math
 import numpy as np
+from collections import defaultdict
 
 from train_freseg import get_dataloader
+from frenet import get_closest
+
+import glob
 
 
 def get_test_dataloaders(
@@ -161,6 +165,88 @@ def inference(args):
         )
 
 
+def metrics(args):
+    exp_dir = Path("./log/")
+    exp_dir = exp_dir.joinpath(
+        f"freseg_{args.fold}_{args.path_length}_{args.npoint}_{args.frenet}"
+    )
+    subdirs = os.listdir(exp_dir)
+    assert len(subdirs) == 1, f"multiple timestamps found in {exp_dir}"
+    exp_dir = exp_dir.joinpath(subdirs[0])
+
+    output_path = exp_dir.joinpath("output/")
+    datasets = os.listdir(output_path)
+    datasets = [d for d in datasets if os.path.isdir(output_path.joinpath(d))]
+
+    results = {}
+    for dataset in datasets:
+        results[dataset] = defaultdict(int)
+        files = os.listdir(output_path.joinpath(dataset))
+        for file in tqdm(files):
+            data = np.load(output_path.joinpath(dataset).joinpath(file))
+            trunk_id = data["trunk_id"].item()
+            points = data["pc"]
+            pred = data["pred"]
+            label = data["label"]
+
+            pred = np.where(label > 0, pred * label, -pred)
+
+            missing_pred = pred == -1
+            nonzero_pred = pred > 0
+
+            if np.sum(missing_pred) > 0:
+                if np.sum(nonzero_pred) > 0:
+                    nonmissing_points = points[nonzero_pred]
+                    nonmissing_pred = pred[nonzero_pred]
+
+                    missing_points = points[missing_pred]
+
+                    _, idx = get_closest(missing_points, nonmissing_points)
+                    pred[missing_pred] = nonmissing_pred[idx]
+                else:
+                    print(
+                        "false positive spines with no correctly predicted ground truth spines"
+                    )
+
+            # create a structured array of pred, label
+            structured = np.zeros(len(pred), dtype=[("pred", int), ("label", int)])
+            structured["pred"] = pred
+            structured["label"] = label
+
+            unique, counts = np.unique(structured, return_counts=True)
+            for u, c in zip(unique, counts):
+                results[dataset][(trunk_id, u["label"], u["pred"])] += c
+        results[dataset] = dict(results[dataset])
+
+    dice = {}
+    binary_dice = {}
+    for dataset in datasets:
+        dice[dataset] = defaultdict(lambda: {"tp": 0, "fn": 0, "fp": 0})
+        binary_dice[dataset] = defaultdict(lambda: {"tp": 0, "tn": 0, "fp": 0, "fn": 0})
+        for (trunk_id, label, pred), c in results[dataset].items():
+            if label == pred:
+                dice[dataset][(trunk_id, label)]["tp"] += c
+            else:
+                dice[dataset][(trunk_id, label)]["fn"] += c
+                if pred != -1:
+                    dice[dataset][(trunk_id, pred)]["fp"] += c
+
+            if label > 0:
+                if pred > 0:
+                    binary_dice[dataset][trunk_id]["tp"] += c
+                else:
+                    binary_dice[dataset][trunk_id]["fn"] += c
+            else:
+                if pred > 0:
+                    binary_dice[dataset][trunk_id]["fp"] += c
+                else:
+                    binary_dice[dataset][trunk_id]["tn"] += c
+
+        dice[dataset] = dict(dice[dataset])
+        binary_dice[dataset] = dict(binary_dice[dataset])
+    np.savez(output_path.joinpath("metrics.npz"), dice=dice, binary_dice=binary_dice)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Testing")
     parser.add_argument(
@@ -181,4 +267,5 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    inference(args)
+    # inference(args)
+    metrics(args)
