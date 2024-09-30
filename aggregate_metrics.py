@@ -4,7 +4,7 @@ from collections import defaultdict
 
 
 def aggregate_metrics():
-    RECALL_THRESHOLD = 0.7
+    recall_thresholds = [0.5, 0.6, 0.7, 0.8, 0.9]
 
     files = sorted(
         glob.glob(
@@ -48,13 +48,15 @@ def aggregate_metrics():
                 ]
                 spine_dice, spine_iou = np.mean(spine_dice), np.mean(spine_iou)
 
-                spine_recall = [
-                    d[label]["tp"] / (d[label]["tp"] + d[label]["fn"])
-                    for label in d.keys()
-                    if label > 0
-                ]
-                spine_recall = [r >= RECALL_THRESHOLD for r in spine_recall]
-                spine_recall = np.mean(spine_recall)
+                for recall_threshold in recall_thresholds:
+                    spine_recall = [
+                        d[label]["tp"] / (d[label]["tp"] + d[label]["fn"])
+                        for label in d.keys()
+                        if label > 0
+                    ]
+                    spine_recall = [r >= recall_threshold for r in spine_recall]
+
+                    agg[f"{recall_threshold}_spine_recall"].extend(spine_recall)
 
                 agg["trunk_dice"].append(trunk_dice)
                 agg["trunk_iou"].append(trunk_iou)
@@ -64,7 +66,6 @@ def aggregate_metrics():
                 agg["binary_spine_iou"].append(binary_spine_iou)
                 agg["spine_dice"].append(spine_dice)
                 agg["spine_iou"].append(spine_iou)
-                agg[f"{RECALL_THRESHOLD}_spine_recall"].append(spine_recall)
 
             agg = {k: np.mean(v) for k, v in agg.items()}
             print(dataset, agg)
