@@ -3,10 +3,9 @@ import os
 import sys
 from functools import partial
 
-sys.path.append("/data/adhinart/dendrite/scripts/igneous")
+sys.path.insert(1, os.path.join(sys.path[0], ".."))
 
-from cache_dataloader import CachedDataset
-from frenet import frenet_transformation
+from frenet import get_dataloader
 
 import torch
 
@@ -36,75 +35,6 @@ seg_classes = class2label
 seg_label_to_cat = {}
 for i, cat in enumerate(seg_classes.keys()):
     seg_label_to_cat[i] = cat
-
-
-def transformation(trunk_id, pc, trunk_pc, label, frenet: bool):
-    """
-    Normalize the point cloud to unit sphere
-    do frenet transformation
-
-    Parameters
-    ----------
-    trunk_id : int
-    pc : [TODO:type]
-    trunk_pc : [TODO:type]
-    label : [TODO:type]
-    frenet : whether not to do FreNet transformation
-    """
-
-    if frenet:
-        pc, trunk_pc, label = frenet_transformation(pc, trunk_pc, label)
-
-    # NOTE: trunk_pc has variable length and cannot be collated using default_collate
-    # normalize [N, 3] to unit sphere
-    pc = pc - np.mean(pc, axis=0)
-    m = np.max(np.sqrt(np.sum(pc**2, axis=1)))
-    pc = pc / m
-    
-    # cast to int
-    label = label.astype(int)
-
-    return trunk_id, pc, label
-
-
-def get_dataloader(
-    species: str,
-    path_length: int,
-    num_points: int,
-    fold: int,
-    is_train: bool,
-    batch_size: int,
-    num_workers: int,
-    frenet: bool,
-):
-    # assert fold in [0, 1, 2, 3, 4]
-    # not asserted since for mouse and human, all folds need to be used
-
-    dataset = CachedDataset(
-        f"/data/adhinart/dendrite/scripts/igneous/outputs/{species}/dataset_1000000_{path_length}",
-        num_points=num_points,
-        folds=[
-            [3, 5, 11, 12, 23, 28, 29, 32, 39, 42],
-            [8, 15, 19, 27, 30, 34, 35, 36, 46, 49],
-            [9, 14, 16, 17, 21, 26, 31, 33, 43, 44],
-            [2, 6, 7, 13, 18, 24, 25, 38, 41, 50],
-            [1, 4, 10, 20, 22, 37, 40, 45, 47, 48],
-        ],
-        fold=fold,
-        is_train=is_train,
-        transform=partial(transformation, frenet=frenet),
-    )
-
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=is_train,
-        num_workers=num_workers,
-        pin_memory=True,
-        drop_last=is_train,
-    )
-
-    return dataloader, dataset.files
 
 
 def inplace_relu(m):
