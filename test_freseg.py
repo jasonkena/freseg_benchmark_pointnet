@@ -3,6 +3,10 @@ import sys
 
 sys.path.insert(1, os.path.join(sys.path[0], ".."))
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = BASE_DIR
+sys.path.append(os.path.join(ROOT_DIR, "models"))
+
 from pathlib import Path
 import os
 import argparse
